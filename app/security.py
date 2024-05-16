@@ -193,22 +193,4 @@ def _derive_key_conkatkdf(shared_key: bytes, encoding: str) -> str:
 
 
 if __name__ == "__main__":
-    u1 = generate_ecc_keys()
-    u2 = generate_ecc_keys()
-
-    u1pv = u1[0]
-    u1pb = u1[1]
-    u2pv = u2[0]
-    u2pb = u2[1]
-
-    u1sk = exchange_key_ecc(u1pv, u2pb)
-    u2sk = exchange_key_ecc(u2pv, u1pb)
-
-    assert u1sk == u2sk
-
-    test = "Super secret message"
-    ct, nc = encrypt_aesgcm(u1sk, test, "SYS")
-    pt = decrypt_aesgcm(u2sk, nc, ct, "SYS")
-
-    assert test == pt
-    print(pt)
+    ...
