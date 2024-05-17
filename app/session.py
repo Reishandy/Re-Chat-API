@@ -1,4 +1,3 @@
-import time
 from datetime import datetime, timedelta, UTC
 
 import pymongo.errors
@@ -13,13 +12,37 @@ from app.security import encrypt_aesgcm, decrypt_aesgcm
 
 def generate_token(token_secret: str, uuid: str, is_refresh_token: bool = False, access_expiry_seconds: int = 3600,
                    refresh_expiry_seconds: int = 259200, hash_algorithm: str = 'HS256') -> str:
-    # Defaults expiry for access is 1 hour while refresh is 3 days
-    exp = datetime.now(UTC) + timedelta(seconds=refresh_expiry_seconds if is_refresh_token else access_expiry_seconds)
+    """
+        Generate a JWT token. Defaults expiry for access is 1 hour while refresh is 3 days.
+
+        :param token_secret: The secret key used for the token encoding.
+        :param uuid: The identifier of the user for whom the token is being generated.
+        :param is_refresh_token: A boolean indicating whether the token is a refresh token.
+        :param access_expiry_seconds: The number of seconds until the access token expires.
+        :param refresh_expiry_seconds: The number of seconds until the refresh token expires.
+        :param hash_algorithm: The hashing algorithm to use.
+        :return: The generated token.
+    """
+    now = datetime.now(UTC)
+    expiry = timedelta(seconds=refresh_expiry_seconds if is_refresh_token else access_expiry_seconds)
+    exp = now + expiry
     return encode({'uuid': uuid, 'exp': exp}, token_secret, algorithm=hash_algorithm)
 
 
 async def add_session(database: Database, app_key: str, token_secret: str, uuid: str, key: str,
                       access_token: str | None = None, refresh_token: str | None = None) -> tuple[str, str]:
+    """
+        Add a user session to the database. WARNING: This should be called after login is successfully.
+
+        :param database: The database to use.
+        :param app_key: The application key.
+        :param token_secret: The secret key used for the token encoding.
+        :param uuid: The identifier of the user for whom the session is being added.
+        :param key: The user's key.
+        :param access_token: The user's access token.
+        :param refresh_token: The user's refresh token.
+        :return: A tuple containing the access token and the refresh token.
+    """
     # Generate access and refresh token
     access_token = generate_token(token_secret, uuid) if access_token is None else access_token
     refresh_token = generate_token(token_secret, uuid, True) if refresh_token is None else refresh_token
@@ -48,7 +71,18 @@ async def add_session(database: Database, app_key: str, token_secret: str, uuid:
 async def validate_token(database: Database, token_secret: str, access_token: str | None = None,
                          refresh_token: str | None = None, is_refresh: bool = False,
                          hash_algorithm: str = 'HS256') -> bool:
-    # If token invalid, get a refresh or remove session
+    """
+        Validate a token.
+
+        :param database: The database to use.
+        :param token_secret: The secret key used for the token encoding.
+        :param access_token: The access token to validate.
+        :param refresh_token: The refresh token to validate.
+        :param is_refresh: A boolean indicating whether the token is a refresh token.
+        :param hash_algorithm: The hashing algorithm to use.
+        :return: True if the token is valid, False otherwise.
+    """
+    # INFO: If token invalid, get a refresh or remove session
     if access_token is None and refresh_token is None:
         raise ValueError('Both should not be None')
 
@@ -63,11 +97,11 @@ async def validate_token(database: Database, token_secret: str, access_token: st
     session_col = database['sessionsDb']
     result = session_col.find_one({'_id': uuid})
     if result is None:
-        raise RuntimeError('Session does not exists')
+        raise ValueError('Session does not exists')
 
     if is_refresh:
         if result['refresh_token'] != refresh_token:
-            raise ValueError('Refresh_token does not match')
+            raise ValueError('Refresh_token does not match')  # This probably would never get called
     else:
         if result['access_token'] != access_token:
             raise ValueError('Access_token does not match')
@@ -76,58 +110,152 @@ async def validate_token(database: Database, token_secret: str, access_token: st
 
 
 async def update_token(database: Database, token_secret: str, uuid: str, access_token: str | None = None) -> str:
-    # Only updates access token, should only be used inside refresh endpoint
+    """
+        Update a token. Only updates access token, should only be used inside refresh endpoint.
+        WARNING: Only call in protected and verified endpoint.
+
+        :param database: The database to use.
+        :param token_secret: The secret key used for the token encoding.
+        :param uuid: The identifier of the user for whom the token is being updated.
+        :param access_token: The new access token.
+        :return: The updated token.
+    """
     access_token = generate_token(token_secret, uuid) if access_token is None else access_token
 
     session_col = database['sessionsDb']
     result = session_col.update_one({'_id': uuid}, {'$set': {'access_token': access_token}})
     if result.matched_count == 0:
         raise ValueError('Session does not exist')
-    if result.modified_count == 0:
-        raise RuntimeError('Unable to update session')
 
     return access_token
 
 
-# TODO: Retrieve main key
-# TODO: Remove user session
-# TODO: Clean expired session
+async def get_main_key(database: Database, app_key: str, uuid: str) -> str:
+    """
+        Get the main key for a user from their session. WARNING: Only call in protected and verified endpoint.
+
+        :param database: The database to use.
+        :param app_key: The application key.
+        :param uuid: The identifier of the user.
+        :return: The user's main key.
+    """
+    session_col = database['sessionsDb']
+    result = session_col.find_one({'_id': uuid}, {'key_encrypted': 1, 'key_nonce': 1})
+    if result is None:
+        raise ValueError('Session does not exists')
+
+    # Get and decrypt
+    key_encrypted = result['key_encrypted']
+    key_nonce = result['key_nonce']
+
+    return decrypt_aesgcm(app_key, key_nonce, key_encrypted, 'APP')
+
+
+async def remove_session(database: Database, uuid: str) -> bool:
+    """
+            Remove a user session from the database. WARNING: Only call in protected and verified endpoint.
+
+            :param database: The database to use.
+            :param uuid: The identifier of the user for whom the session is being removed.
+            :return: True if the session was removed successfully, False otherwise.
+    """
+    session_col = database['sessionsDb']
+    result = session_col.delete_one({'_id': uuid})
+    if not result.acknowledged:
+        raise RuntimeError('Session delete operation was not acknowledged')
+    if result.deleted_count == 0:
+        raise RuntimeError('Unable to delete session: does not exists')
+
+    return True
+
+
+async def clean_session(database: Database, token_secret: str, hash_algorithm: str = 'HS256') -> int:
+    """
+        Clean expired sessions from the database. Should be run as a periodic background task
+
+        :param database: The database to use.
+        :param token_secret: The secret key used for the token encoding.
+        :param hash_algorithm: The hashing algorithm to use.
+    """
+    # INFO: Run as a periodic background task
+    print('Running session cleanup...')
+
+    cleaned_up = 0
+    session_col = database['sessionsDb']
+    results = session_col.find()
+
+    for result in results:
+        try:
+            decode(result['refresh_token'], token_secret, algorithms=hash_algorithm)
+        except jwt.exceptions.ExpiredSignatureError:
+            await remove_session(database, result['_id'])
+            cleaned_up += 1
+
+    print(f"Cleaned up {cleaned_up} sessions.")
+    return cleaned_up
+
 
 if __name__ == '__main__':
-    from os import environ
-    from pymongo import MongoClient
-    from app.database import login
-    from asyncio import run
-    from time import sleep
+    print(datetime.now(), datetime.now())
 
-    mongo_url = environ['MONGO_URL']
-    db_name = environ['DATABASE_NAME']
-    app_key = environ['APP_KEY']
-    secret = environ['TOKEN_SECRET']
+    # from os import environ
+    # from pymongo import MongoClient
+    # from app.database import login
+    # from asyncio import run
+    # from time import sleep
+    #
+    # mongo_url = environ['MONGO_URL']
+    # db_name = environ['DATABASE_NAME']
+    # app_key = environ['APP_KEY']
+    # secret = environ['TOKEN_SECRET']
+    #
+    # client = MongoClient(mongo_url)
+    # db = client[db_name]
 
-    client = MongoClient(mongo_url)
-    db = client[db_name]
+    # print(run(add_session(db, app_key, secret, 'clean_up_test', 'clean_up_test', refresh_token=
+    #                       generate_token(secret, 'clean_up_test', True, refresh_expiry_seconds=0))))
+    # print(run(add_session(db, app_key, secret, 'clean_up_test1', 'clean_up_test1', refresh_token=
+    #                       generate_token(secret, 'clean_up_test1', True, refresh_expiry_seconds=10))))
+    # sleep(1)
+    # run(clean_session(db, secret))
+    # sleep(10)
+    # run(clean_session(db, secret))
+    # run(clean_session(db, secret))
 
-    db['sessionsDb'].drop()
+    # print(run(remove_session(db, 'RE_CHAT_6BE36853_D132_4D5D_9D79_05CAE67F9839')))
+    #
+    # uuid, key = run(login(db, 'RE_CHAT_6BE36853_D132_4D5D_9D79_05CAE67F9839', 'a'))
+    # access, refresh = run(add_session(db, app_key, secret, uuid, key))
+    # print(run(validate_token(db, secret, access_token=access)))
+    # print(run(validate_token(db, secret, is_refresh=True, refresh_token=refresh)))
+    #
+    # sleep(5)
+    #
+    # new_token = run(update_token(db, secret, uuid, generate_token(secret, uuid, access_expiry_seconds=10)))
+    # try:
+    #     print(run(validate_token(db, secret, access_token=access)))
+    # except ValueError as e:
+    #     print(e)
+    #
+    # print(run(validate_token(db, secret, access_token=new_token)))
+    # sleep(10)
+    # try:
+    #     print(run(validate_token(db, secret, access_token=new_token)))
+    # except ValueError as e:
+    #     print(e)
+    #
+    # print(run(get_main_key(db, app_key, uuid)))
+    #
+    # ''' Expected
+    # True
+    # True
+    # True
+    # Access_token does not match
+    # True
+    # Token expired
+    # SNZpJse+HbSid7CMJUAXlEwajm+HJ1BZVnSW9Zkhq5w=
+    # '''
 
-    uuid, key = run(login(db, 'a@a.a', 'a'))
-    access, refresh = run(add_session(db, app_key, secret, uuid, key))
-    print(run(validate_token(db, secret, access_token=access)))
-    print(run(validate_token(db, secret, is_refresh=True, refresh_token=refresh)))
+    # ACTUAL FULL FLOW TEST NEEDS TO HAVE ACCOUNT REGISTRATION AND LOGIN
 
-    sleep(5)
-
-    new_token = run(update_token(db, secret, uuid, generate_token(secret, uuid, access_expiry_seconds=10)))
-    try:
-        print(run(validate_token(db, secret, access_token=access)))
-    except ValueError as e:
-        print(e)
-
-    print(run(validate_token(db, secret, access_token=new_token)))
-    sleep(10)
-    try:
-        print(run(validate_token(db, secret, access_token=new_token)))
-    except ValueError as e:
-        print(e)
-
-    client.close()
+    # client.close()

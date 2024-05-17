@@ -36,7 +36,7 @@ app = FastAPI(lifespan=lifespan)
 
 
 # === MODELS ===
-class Registration(BaseModel):
+class RegisterModel(BaseModel):
     email: EmailStr = Field(..., description="The email of the user.")
     name: str = Field(..., description="The name of the user.", examples=['Username'])
     password: str = Field(
@@ -45,7 +45,7 @@ class Registration(BaseModel):
     )
 
 
-class Logging(BaseModel):
+class LoginModel(BaseModel):
     email_or_uuid: str = Field(
         ..., description="Email or UUID of the user.",
         pattern=r'^([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)$|'
@@ -82,7 +82,7 @@ class Logging(BaseModel):
             }
         }})
 async def register(
-        registration_data: Annotated[Registration, Body(
+        registration_data: Annotated[RegisterModel, Body(
             title='User Registration details',
             description='Endpoint to register a new user. Requires unused email, name, and password.'
         )]) -> dict[str, str]:
@@ -98,7 +98,7 @@ async def register(
 # TODO: Dont forget input validation, make it Annotated
 #   validate login: password, and email or uuid
 #   return login: ok, error
-# TODO: Session storage in mongodb
+#   do add_session()
 # TODO: Create login endpoint that returns the access and refresh token, 401 for value error
 
 # REFRESH ENDPOINT
@@ -110,7 +110,6 @@ async def register(
 # TODO: Logout endpoint, remove_session()
 
 # TODO: Session:
-#   generate on login add_session()
 #   Validate access / refresh token
 #   Retrieve main key
 #   Clean expired session (event async)

@@ -24,8 +24,8 @@ async def register(database: Database, email: str, name: str, password: str) -> 
         :param password: The password of the user.
         :return: None
     """
-    # Does not raise any error if the user registered successfully
-    # Validation will be done in api endpoint, TODO> Remove this if certain
+    # INFO: Does not raise any error if the user registered successfully
+    # Validation will be done in api endpoint, TODO: Remove this if certain
     if not bool(match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', email)):
         raise ValueError('Email is not valid')
 
@@ -56,9 +56,9 @@ async def register(database: Database, email: str, name: str, password: str) -> 
             'private_key_nonce': private_pem_nonce
         })
         if not result.acknowledged:
-            raise RuntimeError('General insert operation was not acknowledged')
+            raise RuntimeError('User insert operation was not acknowledged')
     except pymongo.errors.DuplicateKeyError:
-        raise RuntimeError('UUID already taken: UNLUCKY')
+        raise ValueError('UUID already taken: UNLUCKY')
 
 
 async def login(database: Database, uuid_or_email: str, password: str) -> tuple[str, str]:
@@ -111,6 +111,8 @@ async def login(database: Database, uuid_or_email: str, password: str) -> tuple[
     return uuid, key
 
 
+# TODO: Info getter
+# WARNING: Only call in protected and verified endpoint
 # TODO: Create a separate collection for each chat pair, shared collection for thw two of them
 
 
