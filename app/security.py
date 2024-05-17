@@ -41,7 +41,7 @@ def verify_hash_argon2id(hashed_string: str, string: str) -> bool:
         return False
 
 
-def derive_key_pbkdf2hmac(string: str, b64_salt: str = None, encoding: str = 'utf-8') -> tuple:
+def derive_key_pbkdf2hmac(string: str, b64_salt: str = None, encoding: str = 'utf-8') -> tuple[str, str]:
     """
     Derive a 256bit key and a 128bit salt (used to generate the key) using the PBKDF2HMAC algorithm. It will output
     both key and salt in Base64 encoding.
@@ -79,7 +79,7 @@ def generate_aesgcm_key(encoding: str = 'utf-8') -> str:
     return b64encode(key).decode(encoding)
 
 
-def encrypt_aesgcm(b64_key: str, string: str, tag: str, encoding: str = 'utf-8') -> tuple:
+def encrypt_aesgcm(b64_key: str, string: str, tag: str, encoding: str = 'utf-8') -> tuple[str, str]:
     """
     Encrypt a string using AES-256-GCM. It takes the key in only Base64 encoding, and output the ciphertext and nonce
     in Base64 encoding.
@@ -124,7 +124,7 @@ def decrypt_aesgcm(b64_key: str, b64_nonce: str, b64_ciphertext: str, tag: str, 
     return plaintext.decode(encoding)
 
 
-def generate_ecc_keys(encoding: str = 'utf-8') -> tuple:
+def generate_ecc_keys(encoding: str = 'utf-8') -> tuple[str, str]:
     """
         Generate a pair of ECC keys (private and public) using the SECP384R1 curve.
         The keys are serialized and encoded in Base64.

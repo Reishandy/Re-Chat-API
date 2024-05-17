@@ -76,7 +76,7 @@ async def register(database: Database, email: str, name: str, password: str) -> 
         raise RuntimeError('Specific insert operation was not acknowledged')
 
 
-async def login(database: Database, uuid_or_email: str, password: str) -> tuple:
+async def login(database: Database, uuid_or_email: str, password: str) -> tuple[str, str]:
     """
         Login a user in the database.
 
