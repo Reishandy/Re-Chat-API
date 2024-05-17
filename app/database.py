@@ -1,13 +1,15 @@
+from os import environ
 from re import match
 from uuid import uuid4
-from os import environ
 
 import pymongo.errors
 from pymongo import MongoClient
 from pymongo.database import Database
 
-from app.security import (hash_argon2id, verify_hash_argon2id, generate_ecc_keys, derive_key_pbkdf2hmac, encrypt_aesgcm,
-                          decrypt_aesgcm)
+from app.security import hash_argon2id, verify_hash_argon2id, generate_ecc_keys, derive_key_pbkdf2hmac, encrypt_aesgcm
+
+
+# TODO: store session in mongodb instead of memory
 
 
 async def register(database: Database, email: str, name: str, password: str) -> None:
@@ -27,17 +29,13 @@ async def register(database: Database, email: str, name: str, password: str) -> 
         :param password: The password of the user.
         :return: None
     """
-    # comment: does not raise any error if the user registered successfully
-    # Validation
+    # Does not raise any error if the user registered successfully
+    # Validation will be done in api endpoint, TODO> Remove this if certain
     if not bool(match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', email)):
         raise ValueError('Email is not valid')
-    if password == '':
-        raise ValueError('Password is empty')
-    if len(password) < 8:
-        raise ValueError('Password is too short < 8')
 
     # Check if the email is taken
-    users_col = database['users']
+    users_col = database['usersDb']
     if users_col.find_one({'email': email}):
         raise ValueError('Email is already taken')
 
@@ -56,24 +54,16 @@ async def register(database: Database, email: str, name: str, password: str) -> 
             '_id': uuid,
             'email': email,
             'name': name,
-            'public_key': public_pem
+            'public_key': public_pem,
+            'hashed_password': hashed_password,
+            'main_key_salt': salt,
+            'private_key_encrypted': private_pem_encrypted,
+            'private_key_nonce': private_pem_nonce
         })
         if not result.acknowledged:
             raise RuntimeError('General insert operation was not acknowledged')
     except pymongo.errors.DuplicateKeyError:
         raise RuntimeError('UUID already taken: UNLUCKY')
-
-    # Store specific key info
-    specific_col = database[uuid]
-    result = specific_col.insert_one({
-        'is_keys': True,
-        'hashed_password': hashed_password,
-        'main_key_salt': salt,
-        'private_key_encrypted': private_pem_encrypted,
-        'private_key_nonce': private_pem_nonce
-    })
-    if not result.acknowledged:
-        raise RuntimeError('Specific insert operation was not acknowledged')
 
 
 async def login(database: Database, uuid_or_email: str, password: str) -> tuple[str, str]:
@@ -88,7 +78,7 @@ async def login(database: Database, uuid_or_email: str, password: str) -> tuple[
         :param database: The database to use.
         :param uuid_or_email: The uuid or email of the user.
         :param password: The password of the user.
-        :return: A tuple of the main key and private key.
+        :return: A tuple of the UUID and main key.
     """
     # Validate email or uuid
     if bool(match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', uuid_or_email)):
@@ -99,40 +89,34 @@ async def login(database: Database, uuid_or_email: str, password: str) -> tuple[
         raise ValueError('Invalid format: not and Email nor UUID')
 
     # Check if exists from collection list on email or uuid
+    users_col = database['usersDb']
     if email_mode:
-        users_col = database['users']
-        result = users_col.find_one({'email': uuid_or_email}, {'_id': 1})
+        result = users_col.find_one({'email': uuid_or_email}, {'_id': 1, 'hashed_password': 1, 'main_key_salt': 1})
         if result is None:
             raise ValueError('Unknown Email')
         uuid = result['_id']
     else:
-        col_list = database.list_collection_names()
-        if uuid_or_email not in col_list:
+        result = users_col.find_one({'_id': uuid_or_email}, {'hashed_password': 1, 'main_key_salt': 1})
+        if result is None:
             raise ValueError('Unknown UUID')
         uuid = uuid_or_email
 
     # Retrieve is_keys info
-    specific_col = database[uuid]
-    keys = specific_col.find_one({'is_keys': True})
-    if keys is None:
-        raise RuntimeError('This should not happen')
-
-    # Parse result
-    hashed_password = keys['hashed_password']
-    main_key_salt = keys['main_key_salt']
-    private_pem_encrypted = keys['private_key_encrypted']
-    private_pem_nonce = keys['private_key_nonce']
+    hashed_password = result['hashed_password']
+    main_key_salt = result['main_key_salt']
 
     # Verify password
     if not verify_hash_argon2id(hashed_password, password):
         raise ValueError('Incorrect password')
 
-    # Decrypt main key
+    # Get main key
     key = derive_key_pbkdf2hmac(password, main_key_salt)[0]
-    private_pem = decrypt_aesgcm(key, private_pem_nonce, private_pem_encrypted, uuid)
 
     # Returns main key and private key
-    return key, private_pem
+    return uuid, key
+
+
+# TODO: Create a separate collection for each chat pair, shared collection for thw two of them
 
 
 if __name__ == '__main__':
