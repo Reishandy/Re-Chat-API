@@ -1,15 +1,10 @@
-from os import environ
 from re import match
 from uuid import uuid4
 
 import pymongo.errors
-from pymongo import MongoClient
 from pymongo.database import Database
 
 from app.security import hash_argon2id, verify_hash_argon2id, generate_ecc_keys, derive_key_pbkdf2hmac, encrypt_aesgcm
-
-
-# TODO: store session in mongodb instead of memory
 
 
 async def register(database: Database, email: str, name: str, password: str) -> None:

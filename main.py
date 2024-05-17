@@ -17,13 +17,14 @@ DB: Database
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global CLIENT, DB
-
-    # Connect to the Database
     mongo_url = environ['MONGO_URL']
     database_name = environ['DATABASE_NAME']
 
+    # Connect to the Database
     CLIENT = MongoClient(mongo_url)
     DB = CLIENT[database_name]  # TODO: Replace with actual database
+
+    # TODO: Clean expired session
 
     yield
 
@@ -68,7 +69,7 @@ class Logging(BaseModel):
             "description": "Registration success",
             "content": {
                 "application/json": {
-                    "example": {"detail": "User successfully registered"}
+                    "example": {"detail": "User added successfully"}
                 }
             }
         },
@@ -98,10 +99,21 @@ async def register(
 #   validate login: password, and email or uuid
 #   return login: ok, error
 # TODO: Session storage in mongodb
-# TODO: Create login endpoint that returns the access and refresh token
+# TODO: Create login endpoint that returns the access and refresh token, 401 for value error
 
 # REFRESH ENDPOINT
-# TODO: Create refresh PUT endpoint
+# TODO: Create refresh PUT endpoint, use update_token()
+#   validate refresh token first
+#   user should be redirected to login again if this endpoint return 401
+
+# LOGOUT ENDPOINT
+# TODO: Logout endpoint, remove_session()
+
+# TODO: Session:
+#   generate on login add_session()
+#   Validate access / refresh token
+#   Retrieve main key
+#   Clean expired session (event async)
 
 # TODO: Token
 #   make access and refresh and issues when successfully logged in
