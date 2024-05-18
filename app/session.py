@@ -106,21 +106,21 @@ async def validate_token(database: Database, token_secret: str, access_token: st
     except jwt.exceptions.ExpiredSignatureError:
         raise ValueError('Token expired')
     except jwt.exceptions.DecodeError:
-        raise ValueError('Invalid token')
+        raise ValueError('Invalid token format')
 
     # Check additional validity
     uuid = token['uuid']
     session_col = database['sessionsDb']
     result = session_col.find_one({'_id': uuid})
     if result is None:
-        raise ValueError('User already logged out')
+        raise ValueError('Session not found')
 
     if is_refresh:
         if result['refresh_token'] != refresh_token:
-            raise ValueError('Refresh token does not match')  # This probably would never get called
+            raise ValueError('Invalid refresh token')
     else:
         if result['access_token'] != access_token:
-            raise ValueError('Access token does not match')
+            raise ValueError('Invalid access token')
 
     return True  # Valid token
 

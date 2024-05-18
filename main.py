@@ -49,11 +49,6 @@ class LoginModel(BaseModel):
         return v
 
 
-class LoginResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-
-
 # === HELPER FUNCTION ===
 async def clean_session_periodically(database: Database, token_secret: str, ):
     while True:
@@ -158,7 +153,6 @@ async def register(
     status_code=status.HTTP_200_OK,
     responses={
         200: {
-            'model': LoginResponse,
             'description': 'Login successful',
             'content': {
                 'application/json': {
@@ -166,7 +160,7 @@ async def register(
                 }
             }
         },
-        400: {
+        401: {
             'description': 'Login failed',
             'content': {
                 'application/json': {
@@ -178,14 +172,14 @@ async def login(
         login_data: Annotated[LoginModel, Body(
             title='User credentials',
             description='Endpoint to login and get tokens, requires email or UUID and password.'
-        )]) -> LoginResponse:
+        )]) -> dict[str, str]:
     global DB, TOKEN_SECRET, APP_KEY
 
     # Get uuid and key from login first
     try:
         uuid, key = await db_handler.login(DB, **login_data.dict())
     except ValueError as e:  # Handle invalid credentials
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
     # Check if session already exist (with uuid), if yes remove first
     if await ss_manager.check_session_exists(DB, uuid):
@@ -195,8 +189,7 @@ async def login(
     access_token, refresh_token = await ss_manager.add_session(DB, APP_KEY, TOKEN_SECRET, uuid, key)
 
     # Issue access and refresh token
-    response = LoginResponse(access_token=access_token, refresh_token=refresh_token)
-    return response
+    return {'access_token': access_token, 'refresh_token': refresh_token}
 
 
 # LOGOUT ENDPOINT
@@ -209,6 +202,14 @@ async def login(
             'content': {
                 'application/json': {
                     'example': {'detail': 'User logged out successfully'}
+                }
+            }
+        },
+        400: {
+            'description': 'Logout failed',
+            'content': {
+                'application/json': {
+                    'example': {'detail': 'Logout failed due XYZ reason'}
                 }
             }
         },
@@ -230,9 +231,50 @@ async def logout(current_user: str = Depends(validate_session)) -> dict[str, str
 
 
 # REFRESH ENDPOINT
-# TODO: Create refresh PUT endpoint, use update_token()
-#   validate refresh token first
-#   user should be redirected to login again if this endpoint return 401
+@app.get(
+    '/refresh',
+    description='User should be redirected to the login page if this endpoint returns 401 Unauthorized',
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            'description': 'Refresh successful',
+            'content': {
+                'application/json': {
+                    'example': {'access_token': 'Access token'}
+                }
+            }
+        },
+        401: {
+            'description': 'Authentication problem',
+            'content': {
+                'application/json': {
+                    'example': {'detail': 'Invalid refresh token'}
+                }
+            }
+        }})
+async def refresh(access_token: str = Header(), refresh_token: str = Header(), uuid: str = Header()) -> dict[str, str]:
+    global DB, TOKEN_SECRET
+
+    # Validate headers format
+    if not match(r'^[A-Za-z0-9-_]+.[A-Za-z0-9-_]+.[A-Za-z0-9-_]+$', access_token):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid access token')
+    if not match(r'^[A-Za-z0-9-_]+.[A-Za-z0-9-_]+.[A-Za-z0-9-_]+$', refresh_token):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid refresh token')
+    if not match(r'^RE_CHAT_[0-9A-F]{8}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{12}', uuid):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid UUID')
+
+    # Confusing times man....
+    try:
+        if (not await ss_manager.validate_token(DB, TOKEN_SECRET, access_token=access_token) or
+                await ss_manager.validate_token(DB, TOKEN_SECRET, refresh_token=refresh_token, is_refresh=True)):
+            HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid token')
+
+        # Issue a new token
+        new_access_token = await ss_manager.update_token(DB, TOKEN_SECRET, uuid)
+        return {'access_token': new_access_token}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+
 
 # TODO: GET INFO ENDPOINT
 # TODO: MESSAGING ENDPOINTS
