@@ -25,7 +25,7 @@ async def register(database: Database, email: str, name: str, password: str) -> 
         :return: None
     """
     # INFO: Does not raise any error if the user registered successfully
-    # Validation will be done in api endpoint, TODO: Remove this if certain
+    # Additional validation
     if not bool(match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', email)):
         raise ValueError('Email is not valid')
 
@@ -49,11 +49,12 @@ async def register(database: Database, email: str, name: str, password: str) -> 
             '_id': uuid,
             'email': email,
             'name': name,
-            'public_key': public_pem,
             'hashed_password': hashed_password,
             'main_key_salt': salt,
+            'public_key': public_pem,
             'private_key_encrypted': private_pem_encrypted,
-            'private_key_nonce': private_pem_nonce
+            'private_key_nonce': private_pem_nonce,
+            'contacts': []
         })
         if not result.acknowledged:
             raise RuntimeError('User insert operation was not acknowledged')
@@ -81,7 +82,7 @@ async def login(database: Database, uuid_or_email: str, password: str) -> tuple[
     elif bool(match(r'^RE_CHAT_[0-9A-F]{8}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{12}$', uuid_or_email)):
         email_mode = False
     else:
-        raise ValueError('Invalid format: not and Email nor UUID')
+        raise ValueError('Invalid format: not an Email nor UUID')
 
     # Check if exists from collection list on email or uuid
     users_col = database['usersDb']

@@ -8,8 +8,6 @@ from pymongo.database import Database
 from app.security import encrypt_aesgcm, decrypt_aesgcm
 
 
-# TODO: CREATE DOCSTRING AND UNITTEST
-
 def generate_token(token_secret: str, uuid: str, is_refresh_token: bool = False, access_expiry_seconds: int = 3600,
                    refresh_expiry_seconds: int = 259200, hash_algorithm: str = 'HS256') -> str:
     """
@@ -68,6 +66,22 @@ async def add_session(database: Database, app_key: str, token_secret: str, uuid:
     return access_token, refresh_token
 
 
+async def check_session_exists(database: Database, uuid: str) -> bool:
+    """
+        Check if a session exists in the database for a given user.
+
+        :param database: The database to use.
+        :param uuid: The identifier of the user.
+        :return: True if a session exists for the user, False otherwise.
+    """
+    session_col = database['sessionsDb']
+    result = session_col.find_one({'_id': uuid})
+    if result is None:
+        return False
+
+    return True
+
+
 async def validate_token(database: Database, token_secret: str, access_token: str | None = None,
                          refresh_token: str | None = None, is_refresh: bool = False,
                          hash_algorithm: str = 'HS256') -> bool:
@@ -84,27 +98,29 @@ async def validate_token(database: Database, token_secret: str, access_token: st
     """
     # INFO: If token invalid, get a refresh or remove session
     if access_token is None and refresh_token is None:
-        raise ValueError('Both should not be None')
+        raise RuntimeError('Both should not be None')
 
     # Decode token, either refresh or access
     try:
         token = decode(refresh_token if is_refresh else access_token, token_secret, algorithms=hash_algorithm)
     except jwt.exceptions.ExpiredSignatureError:
         raise ValueError('Token expired')
+    except jwt.exceptions.DecodeError:
+        raise ValueError('Invalid token')
 
-    # Check validity
+    # Check additional validity
     uuid = token['uuid']
     session_col = database['sessionsDb']
     result = session_col.find_one({'_id': uuid})
     if result is None:
-        raise ValueError('Session does not exists')
+        raise ValueError('User already logged out')
 
     if is_refresh:
         if result['refresh_token'] != refresh_token:
-            raise ValueError('Refresh_token does not match')  # This probably would never get called
+            raise ValueError('Refresh token does not match')  # This probably would never get called
     else:
         if result['access_token'] != access_token:
-            raise ValueError('Access_token does not match')
+            raise ValueError('Access token does not match')
 
     return True  # Valid token
 
@@ -196,66 +212,4 @@ async def clean_session(database: Database, token_secret: str, hash_algorithm: s
 
 
 if __name__ == '__main__':
-    print(datetime.now(), datetime.now())
-
-    # from os import environ
-    # from pymongo import MongoClient
-    # from app.database import login
-    # from asyncio import run
-    # from time import sleep
-    #
-    # mongo_url = environ['MONGO_URL']
-    # db_name = environ['DATABASE_NAME']
-    # app_key = environ['APP_KEY']
-    # secret = environ['TOKEN_SECRET']
-    #
-    # client = MongoClient(mongo_url)
-    # db = client[db_name]
-
-    # print(run(add_session(db, app_key, secret, 'clean_up_test', 'clean_up_test', refresh_token=
-    #                       generate_token(secret, 'clean_up_test', True, refresh_expiry_seconds=0))))
-    # print(run(add_session(db, app_key, secret, 'clean_up_test1', 'clean_up_test1', refresh_token=
-    #                       generate_token(secret, 'clean_up_test1', True, refresh_expiry_seconds=10))))
-    # sleep(1)
-    # run(clean_session(db, secret))
-    # sleep(10)
-    # run(clean_session(db, secret))
-    # run(clean_session(db, secret))
-
-    # print(run(remove_session(db, 'RE_CHAT_6BE36853_D132_4D5D_9D79_05CAE67F9839')))
-    #
-    # uuid, key = run(login(db, 'RE_CHAT_6BE36853_D132_4D5D_9D79_05CAE67F9839', 'a'))
-    # access, refresh = run(add_session(db, app_key, secret, uuid, key))
-    # print(run(validate_token(db, secret, access_token=access)))
-    # print(run(validate_token(db, secret, is_refresh=True, refresh_token=refresh)))
-    #
-    # sleep(5)
-    #
-    # new_token = run(update_token(db, secret, uuid, generate_token(secret, uuid, access_expiry_seconds=10)))
-    # try:
-    #     print(run(validate_token(db, secret, access_token=access)))
-    # except ValueError as e:
-    #     print(e)
-    #
-    # print(run(validate_token(db, secret, access_token=new_token)))
-    # sleep(10)
-    # try:
-    #     print(run(validate_token(db, secret, access_token=new_token)))
-    # except ValueError as e:
-    #     print(e)
-    #
-    # print(run(get_main_key(db, app_key, uuid)))
-    #
-    # ''' Expected
-    # True
-    # True
-    # True
-    # Access_token does not match
-    # True
-    # Token expired
-    # SNZpJse+HbSid7CMJUAXlEwajm+HJ1BZVnSW9Zkhq5w=
-    # '''
-
-    # ACTUAL FULL FLOW TEST NEEDS TO HAVE ACCOUNT REGISTRATION AND LOGIN
-
-    # client.close()
+    ...
