@@ -141,7 +141,7 @@ async def update_token(database: Database, token_secret: str, uuid: str, access_
     session_col = database['sessionsDb']
     result = session_col.update_one({'_id': uuid}, {'$set': {'access_token': access_token}})
     if result.matched_count == 0:
-        raise ValueError('Session does not exist')
+        raise ValueError('Session does not exists')
 
     return access_token
 

@@ -76,7 +76,7 @@ async def validate_session(access_token: str = Header(), uuid: str = Header()):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global CLIENT, DB, TOKEN_SECRET, APP_KEY
-    # WARNING: Must set up environment variables
+    # INFO: Must set up environment variables
     mongo_url = environ['MONGO_URL']
     database_name = environ['DATABASE_NAME']  # TODO: Replace with actual database in .env
     # INFO: Should be 256bit (32Bytes) secure random hex string.
@@ -187,7 +187,7 @@ async def login(
 
     # Check if session already exist (with uuid), if yes remove first
     if await ss_manager.check_session_exists(DB, uuid):
-        await ss_manager.remove_session(DB, uuid)  # WARNING: Not inside a protected endpoint, but verified
+        await ss_manager.remove_session(DB, uuid)  # INFO: Not inside a protected endpoint, but verified
 
     # Add to session
     access_token, refresh_token = await ss_manager.add_session(DB, APP_KEY, TOKEN_SECRET, uuid, key)
@@ -238,7 +238,7 @@ async def logout(current_user: str = Depends(validate_session)) -> dict[str, str
 
 
 # REFRESH ENDPOINT
-@app.get(
+@app.post(
     '/refresh',
     description='User should be redirected to the login page if this endpoint returns 401 Unauthorized',
     status_code=status.HTTP_200_OK,
@@ -283,10 +283,9 @@ async def refresh(access_token: str = Header(), refresh_token: str = Header(), u
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
 
-# TODO: GET INFO ENDPOINT
 # GET INFO ENDPOINT
 @app.get(
-    "/user/{uuid_path}",
+    "/user/{user_uuid}",
     status_code=status.HTTP_200_OK,
     responses={
         200: {
@@ -322,22 +321,97 @@ async def refresh(access_token: str = Header(), refresh_token: str = Header(), u
             }
         }})
 async def get_user_info(
-        uuid_path: str = Path(..., description="The UUID of the user to fetch the info."),
+        user_uuid: str = Path(..., description="The UUID of the user to fetch the info."),
         current_user: str = Depends(validate_session)) -> dict[str, str]:
     global DB
 
     try:
-        user_info = await db_handler.get_info(DB, uuid_path)
-        if uuid_path == current_user:
+        user_info = await db_handler.get_info(DB, user_uuid)
+        if user_uuid == current_user:
             return {"uuid": user_info[0], "email": user_info[1], "name": user_info[2]}
 
         return {"uuid": user_info[0], "name": user_info[2]}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
-# TODO: CONTACTS ENDPOINT
-#   add contact
-#   get contacts
+
+# ADD CONTACT ENDPOINT
+@app.post(
+    '/user/{partner_uuid}/add_to_contact',
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        201: {
+            'description': 'Contact added successfully',
+            'content': {
+                'application/json': {
+                    'example': {'detail': 'Contact added successfully'}
+                }
+            }
+        },
+        400: {
+            'description': 'Failed to add contact',
+            'content': {
+                'application/json': {
+                    'example': {'detail': 'Failed to add contact due to XYZ reason'}
+                }
+            }
+        },
+        401: {
+            'description': 'Authentication problem',
+            'content': {
+                'application/json': {
+                    'example': {'detail': 'Invalid access token'}
+                }
+            }
+        }})
+async def add_contact(partner_uuid: str = Path(..., description="The UUID of the contact to add."),
+                      current_user: str = Depends(validate_session)) -> dict[str, str]:
+    global DB, APP_KEY
+
+    try:
+        # Get main key
+        main_key = await ss_manager.get_main_key(DB, APP_KEY, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+
+    try:
+        # Add to contact
+        await db_handler.add_contact(DB, current_user, partner_uuid, main_key)
+        return {'detail': 'Contact added successfully'}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+# GET CONTACTS ENDPOINT
+@app.get(
+    '/get_contacts',
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            'description': 'Contacts retrieved successfully',
+            'content': {
+                'application/json': {
+                    'example': {'contacts': [{'uuid': 'UUID1', 'name': 'name1'}, {'uuid': 'UUID2', 'name': 'name2'}]}
+                }
+            }
+        },
+        401: {
+            'description': 'Authentication problem',
+            'content': {
+                'application/json': {
+                    'example': {'detail': 'Invalid access token'}
+                }
+            }
+        }})
+async def get_contacts(current_user: str = Depends(validate_session)) -> dict[str, list[dict[str, str]]]:
+    global DB
+
+    try:
+        contacts = await db_handler.get_contacts(DB, current_user)
+        return {'contacts': contacts}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
 
 # TODO: MESSAGING ENDPOINTS
 

@@ -192,10 +192,10 @@ async def add_contact(database: Database, own_uuid: str, partner_uuid: str, own_
         'shared_key_nonce': shared_key_nonce
     }}})
     if not result.acknowledged:
-        raise RuntimeError('User insert operation was not acknowledged')
+        raise RuntimeError('Contact insert operation was not acknowledged')
 
 
-async def get_contacts(database: Database, uuid: str) -> list[str]:
+async def get_contacts(database: Database, uuid: str) -> list[dict[str, str]]:
     """
     Retrieve the user's contact list from the database.
 
@@ -215,13 +215,16 @@ async def get_contacts(database: Database, uuid: str) -> list[str]:
     if result is None:
         raise ValueError('User does not exists')
 
-    # Parse and return contact
-    contact_uuids = []
-    contacts = result['contacts']
-    for contact in contacts:
-        contact_uuids.append(contact['partner_uuid'])
+    # Get list of partner_uuids
+    partner_uuids = [contact['partner_uuid'] for contact in result['contacts']]
 
-    return contact_uuids
+    # Query for all partners at once
+    partners = users_col.find({'_id': {'$in': partner_uuids}}, {'name': 1})
+
+    # Build the response
+    contacts_parsed = [{'uuid': partner['_id'], 'name': partner['name']} for partner in partners]
+
+    return contacts_parsed
 
 
 async def get_contact_detail(database: Database, own_uuid: str, partner_uuid: str, own_main_key: str) \
