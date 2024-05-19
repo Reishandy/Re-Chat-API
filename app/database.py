@@ -4,7 +4,8 @@ from uuid import uuid4
 import pymongo.errors
 from pymongo.database import Database
 
-from app.security import hash_argon2id, verify_hash_argon2id, generate_ecc_keys, derive_key_pbkdf2hmac, encrypt_aesgcm
+from app.security import hash_argon2id, verify_hash_argon2id, generate_ecc_keys, derive_key_pbkdf2hmac, \
+    encrypt_aesgcm, decrypt_aesgcm, exchange_key_ecc, hash_sha256
 
 
 async def register(database: Database, email: str, name: str, password: str) -> None:
@@ -114,7 +115,6 @@ async def login(database: Database, uuid_or_email: str, password: str) -> tuple[
     return uuid, key
 
 
-# TODO: Info getter
 async def get_info(database: Database, uuid: str) -> tuple[str, str, str]:
     """
     Retrieve user information from the database.
@@ -136,6 +136,140 @@ async def get_info(database: Database, uuid: str) -> tuple[str, str, str]:
 
     # Returns the info
     return uuid, result['email'], result['name']
+
+
+async def add_contact(database: Database, own_uuid: str, partner_uuid: str, own_main_key: str) -> None:
+    """
+    Add a new contact to the user's contact list.
+
+    This function will add a new contact to the user's contact list in the database.
+    The function will also generate a shared key for the user and the new contact.
+
+    If the user or the contact does not exist, a ValueError will be raised.
+
+    :param database: The database to use.
+    :param own_uuid: The UUID of the user.
+    :param partner_uuid: The UUID of the new contact.
+    :param own_main_key: The main key of the user.
+    :return: None
+    :raises ValueError: If the user or the contact does not exist.
+    """
+    # WARNING: Only call this function in protected and verified endpoint
+    # Get own private key
+    users_col = database['usersDb']
+    own_result = users_col.find_one({
+        '_id': own_uuid}, {'private_key_encrypted': 1, 'private_key_nonce': 1, 'contacts': 1})
+    if own_result is None:
+        raise ValueError('User does not exists')
+
+    # Check if partner already in contact
+    for contact in own_result['contacts']:
+        if partner_uuid == contact['partner_uuid']:
+            raise ValueError('Already in contact')
+
+    # Get partner public key
+    partner_result = users_col.find_one({'_id': partner_uuid}, {'public_key': 1})
+    public_key = partner_result['public_key']
+
+    # Decrypt own private key
+    private_key_encrypted = own_result['private_key_encrypted']
+    private_key_nonce = own_result['private_key_nonce']
+    private_key = decrypt_aesgcm(own_main_key, private_key_nonce, private_key_encrypted, own_uuid)
+
+    # Do a key exchange, and encrypt it
+    shared_key = exchange_key_ecc(private_key, public_key)
+    shared_key_encrypted, shared_key_nonce = encrypt_aesgcm(own_main_key, shared_key, own_uuid)
+
+    # Create a new shared chat collection (only the name)
+    combined_uuid = ''.join(sorted([own_uuid, partner_uuid]))
+    shared_collection = hash_sha256(combined_uuid) + 'Db'
+
+    # Insert details into own contact
+    result = users_col.update_one({'_id': own_uuid}, {'$push': {'contacts': {
+        'partner_uuid': partner_uuid,
+        'shared_collection': shared_collection,
+        'shared_key_encrypted': shared_key_encrypted,
+        'shared_key_nonce': shared_key_nonce
+    }}})
+    if not result.acknowledged:
+        raise RuntimeError('User insert operation was not acknowledged')
+
+
+async def get_contacts(database: Database, uuid: str) -> list[str]:
+    """
+    Retrieve the user's contact list from the database.
+
+    This function queries the database for a user with the given UUID and returns the user's contact list.
+    If the user does not exist, a ValueError is raised.
+
+    :param database: The database to use.
+    :param uuid: The UUID of the user.
+    :return: A list containing the UUIDs of the user's contacts.
+    :raises ValueError: If the user does not exist.
+    """
+    # WARNING: Only call this function in protected and verified endpoint
+    # INFO: To get all contacts, returns a list of UUID only
+    # Query with id
+    users_col = database['usersDb']
+    result = users_col.find_one({'_id': uuid}, {'contacts': 1})
+    if result is None:
+        raise ValueError('User does not exists')
+
+    # Parse and return contact
+    contact_uuids = []
+    contacts = result['contacts']
+    for contact in contacts:
+        contact_uuids.append(contact['partner_uuid'])
+
+    return contact_uuids
+
+
+async def get_contact_detail(database: Database, own_uuid: str, partner_uuid: str, own_main_key: str) \
+        -> tuple[str, str, str]:
+    """
+    Retrieve the details of a specific contact from the user's contact list.
+
+    This function queries the database for a user with the given UUID and a contact with the given partner UUID.
+    It returns the contact's UUID, the shared collection, and the shared key.
+    If the user or the contact does not exist, a ValueError is raised.
+
+    :param database: The database to use.
+    :param own_uuid: The UUID of the user.
+    :param partner_uuid: The UUID of the contact.
+    :param own_main_key: The main key of the user.
+    :return: A tuple containing the contact's UUID, the shared collection, and the shared key.
+    :raises ValueError: If the user or the contact does not exist.
+    """
+    # WARNING: Only call this function in protected and verified endpoint
+    # INFO: To get a single contact details, return uuid, shared collection, and shared key. Use for sending message
+    # Query with id
+    users_col = database['usersDb']
+    result = users_col.find_one({'_id': own_uuid}, {'contacts': 1})
+    if result is None:
+        raise ValueError('User does not exists')
+
+    # Get partner details
+    contacts = result['contacts']
+    shared_collection = None
+    shared_key_encrypted = None
+    shared_key_nonce = None
+    for contact in contacts:
+        if partner_uuid != contact['partner_uuid']:
+            continue
+
+        shared_collection = contact['shared_collection']
+        shared_key_encrypted = contact['shared_key_encrypted']
+        shared_key_nonce = contact['shared_key_nonce']
+
+    # Check if contact exist
+    if shared_collection is None:
+        raise ValueError('Contact does not exist')
+
+    # Decrypt the shared key
+    shared_key = decrypt_aesgcm(own_main_key, shared_key_nonce, shared_key_encrypted, own_uuid)
+
+    # Returns the details
+    return partner_uuid, shared_collection, shared_key
 
 
 # TODO: Create a separate collection for each chat pair, shared collection for thw two of them

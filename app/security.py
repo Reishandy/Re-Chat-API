@@ -41,6 +41,19 @@ def verify_hash_argon2id(hashed_string: str, string: str) -> bool:
         return False
 
 
+def hash_sha256(string: str, encoding: str = 'utf-8') -> str:
+    """
+    Hash a string using the SHA-256 algorithm.
+
+    :param string: The string to hash.
+    :param encoding: The encoding to use to encode the string.
+    :return: The hashed string.
+    """
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(string.encode(encoding))
+    return digest.finalize().hex()
+
+
 def derive_key_pbkdf2hmac(string: str, b64_salt: str = None, encoding: str = 'utf-8') -> tuple[str, str]:
     """
     Derive a 256bit key and a 128bit salt (used to generate the key) using the PBKDF2HMAC algorithm. It will output
@@ -161,7 +174,7 @@ def exchange_key_ecc(serialized_own_private_key: str, serialized_partner_public_
     """
     own_private_key = serialization.load_pem_private_key(
         b64decode(serialized_own_private_key),
-        password=None  # The private key will be encrypted before storage later
+        password=None  # INFO: The private key will be encrypted before storage later
     )
     partner_public_key = serialization.load_pem_public_key(
         b64decode(serialized_partner_public_key)
@@ -184,7 +197,7 @@ def _derive_key_conkatkdf(shared_key: bytes, encoding: str) -> str:
     other_info = b'Key Exchange'
     cdkf = ConcatKDFHash(
         algorithm=hashes.SHA256(),
-        length=32,  # # The size is 256bit, to be used as AES-GCM key / chat key
+        length=32,  # The size is 256bit, to be used as AES-GCM key / chat key
         otherinfo=other_info
     )
 

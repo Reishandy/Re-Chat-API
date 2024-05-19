@@ -335,6 +335,10 @@ async def get_user_info(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
+# TODO: CONTACTS ENDPOINT
+#   add contact
+#   get contacts
+
 # TODO: MESSAGING ENDPOINTS
 
 # TODO: Session:
