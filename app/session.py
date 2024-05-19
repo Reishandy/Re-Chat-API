@@ -106,7 +106,7 @@ async def validate_token(database: Database, token_secret: str, access_token: st
     except jwt.exceptions.ExpiredSignatureError:
         raise ValueError('Token expired')
     except jwt.exceptions.DecodeError:
-        raise ValueError('Invalid token format')
+        raise ValueError('Invalid token')
 
     # Check additional validity
     uuid = token['uuid']
@@ -180,7 +180,7 @@ async def remove_session(database: Database, uuid: str) -> bool:
     if not result.acknowledged:
         raise RuntimeError('Session delete operation was not acknowledged')
     if result.deleted_count == 0:
-        raise RuntimeError('Unable to delete session: does not exists')
+        raise ValueError('Session not found')
 
     return True
 

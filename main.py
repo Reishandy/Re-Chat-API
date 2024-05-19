@@ -5,7 +5,7 @@ from asyncio import sleep, create_task, CancelledError
 from re import match
 
 from pydantic import BaseModel, Field, EmailStr, field_validator
-from fastapi import FastAPI, status, Body, HTTPException, Header, Depends
+from fastapi import FastAPI, status, Body, HTTPException, Header, Depends, Path
 from pymongo import MongoClient
 from pymongo.database import Database
 
@@ -61,9 +61,9 @@ async def validate_session(access_token: str = Header(), uuid: str = Header()):
 
     # Validate headers format
     if not match(r'^[A-Za-z0-9-_]+.[A-Za-z0-9-_]+.[A-Za-z0-9-_]+$', access_token):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid access token')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid access token')
     if not match(r'^RE_CHAT_[0-9A-F]{8}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{12}', uuid):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid UUID')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid UUID')
 
     try:
         if await ss_manager.validate_token(DB, TOKEN_SECRET, access_token=access_token):
@@ -156,7 +156,11 @@ async def register(
             'description': 'Login successful',
             'content': {
                 'application/json': {
-                    'example': {'access_token': 'Access token', 'refresh_token': 'Refresh token'}
+                    'example': {
+                        'uuid': 'Users UUID',
+                        'access_token': 'Access token',
+                        'refresh_token': 'Refresh token'
+                    }
                 }
             }
         },
@@ -189,7 +193,7 @@ async def login(
     access_token, refresh_token = await ss_manager.add_session(DB, APP_KEY, TOKEN_SECRET, uuid, key)
 
     # Issue access and refresh token
-    return {'access_token': access_token, 'refresh_token': refresh_token}
+    return {'uuid': uuid, 'access_token': access_token, 'refresh_token': refresh_token}
 
 
 # LOGOUT ENDPOINT
@@ -205,11 +209,11 @@ async def login(
                 }
             }
         },
-        400: {
-            'description': 'Logout failed',
+        404: {
+            'description': 'Session not found',
             'content': {
                 'application/json': {
-                    'example': {'detail': 'Logout failed due XYZ reason'}
+                    'example': {'detail': 'Session not found'}
                 }
             }
         },
@@ -226,8 +230,11 @@ async def logout(current_user: str = Depends(validate_session)) -> dict[str, str
 
     # INFO: Currently does not handle Runtime error inside remove_session(),
     #       because already handled by validate_session() depend
-    if await ss_manager.remove_session(DB, current_user):
-        return {'detail': 'User logged out successfully'}
+    try:
+        if await ss_manager.remove_session(DB, current_user):
+            return {'detail': 'User logged out successfully'}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
 # REFRESH ENDPOINT
@@ -257,11 +264,11 @@ async def refresh(access_token: str = Header(), refresh_token: str = Header(), u
 
     # Validate headers format
     if not match(r'^[A-Za-z0-9-_]+.[A-Za-z0-9-_]+.[A-Za-z0-9-_]+$', access_token):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid access token')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid access token')
     if not match(r'^[A-Za-z0-9-_]+.[A-Za-z0-9-_]+.[A-Za-z0-9-_]+$', refresh_token):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid refresh token')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid refresh token')
     if not match(r'^RE_CHAT_[0-9A-F]{8}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{12}', uuid):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid UUID')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid UUID')
 
     # Confusing times man....
     try:
@@ -277,6 +284,57 @@ async def refresh(access_token: str = Header(), refresh_token: str = Header(), u
 
 
 # TODO: GET INFO ENDPOINT
+# GET INFO ENDPOINT
+@app.get(
+    "/user/{uuid_path}",
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Successful Response",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "Get own info": {
+                            "value": {
+                                "uuid": "RE_CHAT_00000000_0000_0000_0000_000000000000",
+                                "email": "user@example.com",
+                                "name": "Username"
+                            }
+                        },
+                        "Get other user's info": {
+                            "value": {
+                                "uuid": "RE_CHAT_00000000_0000_0000_0000_000000000000",
+                                "name": "Username"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Not Found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "User does not exist"
+                    }
+                }
+            }
+        }})
+async def get_user_info(
+        uuid_path: str = Path(..., description="The UUID of the user to fetch the info."),
+        current_user: str = Depends(validate_session)) -> dict[str, str]:
+    global DB
+
+    try:
+        user_info = await db_handler.get_info(DB, uuid_path)
+        if uuid_path == current_user:
+            return {"uuid": user_info[0], "email": user_info[1], "name": user_info[2]}
+
+        return {"uuid": user_info[0], "name": user_info[2]}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
 # TODO: MESSAGING ENDPOINTS
 
 # TODO: Session:

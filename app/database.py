@@ -23,6 +23,7 @@ async def register(database: Database, email: str, name: str, password: str) -> 
         :param name: The name of the user.
         :param password: The password of the user.
         :return: None
+        :raises ValueError: If email and uuid invalid.
     """
     # INFO: Does not raise any error if the user registered successfully
     # Additional validation
@@ -75,6 +76,7 @@ async def login(database: Database, uuid_or_email: str, password: str) -> tuple[
         :param uuid_or_email: The uuid or email of the user.
         :param password: The password of the user.
         :return: A tuple of the UUID and main key.
+        :raises ValueError: If wrong credentials.
     """
     # Validate email or uuid
     if bool(match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', uuid_or_email)):
@@ -113,7 +115,29 @@ async def login(database: Database, uuid_or_email: str, password: str) -> tuple[
 
 
 # TODO: Info getter
-# WARNING: Only call in protected and verified endpoint
+async def get_info(database: Database, uuid: str) -> tuple[str, str, str]:
+    """
+    Retrieve user information from the database.
+
+    This function queries the database for a user with the given UUID and returns the user's UUID, email, and name.
+    If the user does not exist, a ValueError is raised.
+
+    :param database: The database to use.
+    :param uuid: The UUID of the user.
+    :return: A tuple containing the user's UUID, email, and name.
+    :raises ValueError: If the user does not exist.
+    """
+    # WARNING: Only call this function in protected and verified endpoint
+    # Query the id
+    users_col = database['usersDb']
+    result = users_col.find_one({'_id': uuid}, {'email': 1, 'name': 1})
+    if result is None:
+        raise ValueError('User does not exists')
+
+    # Returns the info
+    return uuid, result['email'], result['name']
+
+
 # TODO: Create a separate collection for each chat pair, shared collection for thw two of them
 
 
