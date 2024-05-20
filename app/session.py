@@ -82,7 +82,7 @@ async def check_session_exists(database: Database, uuid: str) -> bool:
     return True
 
 
-async def validate_token(database: Database, token_secret: str, access_token: str | None = None,
+async def validate_token(database: Database, token_secret: str, uuid: str, access_token: str | None = None,
                          refresh_token: str | None = None, is_refresh: bool = False,
                          hash_algorithm: str = 'HS256') -> bool:
     """
@@ -90,6 +90,7 @@ async def validate_token(database: Database, token_secret: str, access_token: st
 
         :param database: The database to use.
         :param token_secret: The secret key used for the token encoding.
+        :param uuid: THe uuid of the user.
         :param access_token: The access token to validate.
         :param refresh_token: The refresh token to validate.
         :param is_refresh: A boolean indicating whether the token is a refresh token.
@@ -109,7 +110,10 @@ async def validate_token(database: Database, token_secret: str, access_token: st
         raise ValueError('Invalid token')
 
     # Check additional validity
-    uuid = token['uuid']
+    uuid_token = token['uuid']
+    if uuid != uuid_token:
+        raise ValueError('UUID mismatch')
+
     session_col = database['sessionsDb']
     result = session_col.find_one({'_id': uuid})
     if result is None:

@@ -358,11 +358,11 @@ async def get_messages(database: Database, shared_db_name: str, shared_key: str,
     # Get messages
     shared_db_col = database[shared_db_name]
     if from_id is None and num_messages is None:
-        result = shared_db_col.find()
+        result = shared_db_col.find().sort({'_id': -1})
     elif from_id is None and num_messages:
-        result = shared_db_col.find().limit(num_messages)
+        result = shared_db_col.find().limit(num_messages).sort({'_id': -1})
     else:
-        result = shared_db_col.find({'_id': {'$lt': from_id}}).limit(num_messages)
+        result = shared_db_col.find({'_id': {'$lte': from_id}}).sort({'_id': -1}).limit(num_messages)
 
     # Parse the result
     messages = []

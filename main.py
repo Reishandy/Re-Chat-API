@@ -1,13 +1,16 @@
-from typing import Annotated
+from asyncio import sleep, create_task, CancelledError, gather
 from contextlib import asynccontextmanager
+from logging import info, basicConfig, INFO
 from os import environ
-from asyncio import sleep, create_task, CancelledError
 from re import match
+from typing import Annotated
 
+from fastapi import FastAPI, status, Body, HTTPException, Header, Depends, Path, WebSocket, WebSocketDisconnect, \
+    WebSocketException
 from pydantic import BaseModel, Field, EmailStr, field_validator
-from fastapi import FastAPI, status, Body, HTTPException, Header, Depends, Path
 from pymongo import MongoClient
 from pymongo.database import Database
+from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
 
 import app.database as db_handler
 import app.session as ss_manager
@@ -15,6 +18,7 @@ import app.session as ss_manager
 # === GLOBAL ===
 CLIENT: MongoClient
 DB: Database
+DB_MOTOR: AsyncIOMotorDatabase
 TOKEN_SECRET: str
 APP_KEY: str
 
@@ -50,13 +54,13 @@ class LoginModel(BaseModel):
 
 
 # === HELPER FUNCTION ===
-async def clean_session_periodically(database: Database, token_secret: str, ):
+async def clean_session_periodically(database: Database, token_secret: str) -> None:
     while True:
         await sleep(3600)  # INFO: Ran every hour
         await ss_manager.clean_session(database, token_secret)
 
 
-async def validate_session(access_token: str = Header(), uuid: str = Header()):
+async def validate_session(access_token: str = Header(), uuid: str = Header()) -> str:
     global DB, TOKEN_SECRET
 
     # Validate headers format
@@ -66,7 +70,7 @@ async def validate_session(access_token: str = Header(), uuid: str = Header()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid UUID')
 
     try:
-        if await ss_manager.validate_token(DB, TOKEN_SECRET, access_token=access_token):
+        if await ss_manager.validate_token(DB, TOKEN_SECRET, uuid, access_token=access_token):
             return uuid
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
@@ -75,10 +79,10 @@ async def validate_session(access_token: str = Header(), uuid: str = Header()):
 # === FAST API ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global CLIENT, DB, TOKEN_SECRET, APP_KEY
+    global CLIENT, DB, TOKEN_SECRET, APP_KEY, DB_MOTOR
     # INFO: Must set up environment variables
     mongo_url = environ['MONGO_URL']
-    database_name = environ['DATABASE_NAME']  # TODO: Replace with actual database in .env
+    database_name = environ['DATABASE_NAME']  # INFO: Replace with actual database in .env
     # INFO: Should be 256bit (32Bytes) secure random hex string.
     TOKEN_SECRET = environ['TOKEN_SECRET']
     # INFO: Should be 256bit (32Bytes) secure random encoded in Base64.
@@ -88,6 +92,10 @@ async def lifespan(app: FastAPI):
     # Connect to the Database
     CLIENT = MongoClient(mongo_url)
     DB = CLIENT[database_name]
+
+    # Connect using motor client
+    client_motor = AsyncIOMotorClient(mongo_url)
+    DB_MOTOR = client_motor[database_name]
 
     # Clean the session before accepting any requests
     await ss_manager.clean_session(DB, TOKEN_SECRET)
@@ -259,12 +267,10 @@ async def logout(current_user: str = Depends(validate_session)) -> dict[str, str
                 }
             }
         }})
-async def refresh(access_token: str = Header(), refresh_token: str = Header(), uuid: str = Header()) -> dict[str, str]:
+async def refresh(refresh_token: str = Header(), uuid: str = Header()) -> dict[str, str]:
     global DB, TOKEN_SECRET
 
     # Validate headers format
-    if not match(r'^[A-Za-z0-9-_]+.[A-Za-z0-9-_]+.[A-Za-z0-9-_]+$', access_token):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid access token')
     if not match(r'^[A-Za-z0-9-_]+.[A-Za-z0-9-_]+.[A-Za-z0-9-_]+$', refresh_token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid refresh token')
     if not match(r'^RE_CHAT_[0-9A-F]{8}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{12}', uuid):
@@ -272,8 +278,7 @@ async def refresh(access_token: str = Header(), refresh_token: str = Header(), u
 
     # Confusing times man....
     try:
-        if (not await ss_manager.validate_token(DB, TOKEN_SECRET, access_token=access_token) or
-                await ss_manager.validate_token(DB, TOKEN_SECRET, refresh_token=refresh_token, is_refresh=True)):
+        if not await ss_manager.validate_token(DB, TOKEN_SECRET, uuid, refresh_token=refresh_token, is_refresh=True):
             HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid token')
 
         # Issue a new token
@@ -413,7 +418,114 @@ async def get_contacts(current_user: str = Depends(validate_session)) -> dict[st
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
-# TODO: MESSAGING WEBSOCKET ENDPOINTS
+# MESSAGING HELPER FUNCTION
+basicConfig(level=INFO)
 
 
-# WARNING: MAKE SURE EVERY CALL TO DATABASE HANDLER AND SESSION MANAGER HAVE AWAIT
+async def validate_session_websocket(access_token: str, uuid: str) -> str:
+    global DB, TOKEN_SECRET
+
+    # Validate headers format
+    if not match(r'^[A-Za-z0-9-_]+.[A-Za-z0-9-_]+.[A-Za-z0-9-_]+$', access_token):
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason='Invalid access token')
+    if not match(r'^RE_CHAT_[0-9A-F]{8}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{12}', uuid):
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason='Invalid UUID')
+
+    try:
+        if await ss_manager.validate_token(DB, TOKEN_SECRET, uuid, access_token=access_token):
+            return uuid
+    except ValueError as e:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason=str(e))
+
+
+async def receive_message_from_db(websocket: WebSocket, shared_collection: str, shared_key: str,
+                                  own_uuid: str, partner_uuid: str) -> None:
+    global DB, DB_MOTOR
+
+    # Get pipeline
+    shared_col = DB_MOTOR[shared_collection]
+    pipeline = [{'$match': {'operationType': 'insert'}}]
+
+    try:
+        async with shared_col.watch(pipeline) as stream:
+            async for insert_change in stream:
+                if insert_change['fullDocument']['from'] == own_uuid:
+                    await sleep(0.1)
+
+                msg_id = insert_change['fullDocument']['_id']
+
+                # Run fetch and send
+                message = await db_handler.get_messages(DB, shared_collection, shared_key, own_uuid, partner_uuid,
+                                                        num_messages=1, from_id=msg_id)
+                await websocket.send_text(str(message[0]))
+    except WebSocketDisconnect:
+        await websocket.close()
+        return
+    except Exception as e:
+        info(str(e))
+
+
+async def send_message_to_db(websocket: WebSocket, shared_collection: str, shared_key: str, own_uuid: str) -> None:
+    global DB
+
+    try:
+        while True:
+            message = await websocket.receive_text()
+
+            # Add message to database
+            await db_handler.add_message(DB, own_uuid, shared_key, shared_collection, message)
+    except WebSocketDisconnect:
+        await websocket.close()
+        return
+    except Exception as e:
+        info(str(e))
+
+
+# MESSAGING WEBSOCKET ENDPOINT
+@app.websocket('/chat')
+async def chat_websocket(websocket: WebSocket) -> None:
+    """
+    EXPLAIN IN DETAILS HOW THIS WORKS AND WHAT DOES IT NEED.
+    :param websocket:
+    :return:
+    """
+    # WARNING: THIS ENDPOINT USES A DIFFERENT MONGODB DRIVER, WHICH IS NOT GOOD. DO NOT DO THIS!!!
+
+    global DB, TOKEN_SECRET, APP_KEY
+    await websocket.accept()
+
+    # Get initial data (FORMAT IS 'TOKEN|UUID|PARTNER_UUID')
+    credentials = await websocket.receive_text()
+    try:
+        access_token, uuid, partner_uuid = credentials.split('|')
+    except ValueError:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason='Invalid credentials format')
+
+    # Validate session
+    r_uuid = await validate_session_websocket(access_token, uuid)
+    if r_uuid != uuid:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason='UUID mismatch')
+
+    info(f'{uuid} connection established')
+
+    # Get main key and contact details
+    try:
+        main_key = await ss_manager.get_main_key(DB, APP_KEY, uuid)
+        _, shared_collection, shared_key = await db_handler.get_contact_details(DB, uuid, partner_uuid, main_key)
+    except ValueError as e:
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason=str(e))
+
+    # Send all messages (temporary)
+    messages_initial = await db_handler.get_messages(DB, shared_collection, shared_key, uuid, partner_uuid)
+    await websocket.send_text(str(messages_initial))
+
+    # Start receiver and sender thread
+    sender_task = create_task(send_message_to_db(websocket, shared_collection, shared_key, uuid))
+    receiver_task = create_task(
+        receive_message_from_db(websocket, shared_collection, shared_key, uuid, partner_uuid))
+    try:
+        await gather(sender_task, receiver_task)
+    except RuntimeError:
+        pass
+
+    info(f'{uuid} connection closed')
