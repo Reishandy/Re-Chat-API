@@ -413,19 +413,7 @@ async def get_contacts(current_user: str = Depends(validate_session)) -> dict[st
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
-# TODO: MESSAGING ENDPOINTS
+# TODO: MESSAGING WEBSOCKET ENDPOINTS
 
-# TODO: Session:
-#   Validate access / refresh token
-#   Retrieve main key
-#   Clean expired session (event async)
-
-# TODO: Token
-#   make access and refresh and issues when successfully logged in
-#   access handler, every access to protected it will be checked if it match then if expired.
-#       if token does not match return unauthorized, if expired generate a new one and return unauthorized
-#   refresh endpoint to refresh the access token, will send a new access token (server stored) if refresh token match
-#       if not user will be logged out
-#   ALL PROTECTED ENDPOINT NEEDS TO VERIFY ACCESS TOKEN VIA REQUEST HEADER
 
 # WARNING: MAKE SURE EVERY CALL TO DATABASE HANDLER AND SESSION MANAGER HAVE AWAIT

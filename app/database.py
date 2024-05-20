@@ -1,7 +1,9 @@
 from re import match
 from uuid import uuid4
+from datetime import datetime, UTC
 
 import pymongo.errors
+from pymongo import ReturnDocument
 from pymongo.database import Database
 
 from app.security import hash_argon2id, verify_hash_argon2id, generate_ecc_keys, derive_key_pbkdf2hmac, \
@@ -182,7 +184,7 @@ async def add_contact(database: Database, own_uuid: str, partner_uuid: str, own_
 
     # Create a new shared chat collection (only the name)
     combined_uuid = ''.join(sorted([own_uuid, partner_uuid]))
-    shared_collection = hash_sha256(combined_uuid) + 'Db'
+    shared_collection = 'RE_CHAT_' + hash_sha256(combined_uuid) + '_Db'
 
     # Insert details into own contact
     result = users_col.update_one({'_id': own_uuid}, {'$push': {'contacts': {
@@ -227,7 +229,7 @@ async def get_contacts(database: Database, uuid: str) -> list[dict[str, str]]:
     return contacts_parsed
 
 
-async def get_contact_detail(database: Database, own_uuid: str, partner_uuid: str, own_main_key: str) \
+async def get_contact_details(database: Database, own_uuid: str, partner_uuid: str, own_main_key: str) \
         -> tuple[str, str, str]:
     """
     Retrieve the details of a specific contact from the user's contact list.
@@ -275,7 +277,149 @@ async def get_contact_detail(database: Database, own_uuid: str, partner_uuid: st
     return partner_uuid, shared_collection, shared_key
 
 
-# TODO: Create a separate collection for each chat pair, shared collection for thw two of them
+async def _get_next_sequence(database: Database, collection_name: str) -> int:
+    """
+        Get the next sequence number for a given collection.
+
+        This function queries the 'countersDb' collection in the database for a document with the given collection name
+        and increments the 'seq' field of the document. The updated 'seq' value is then returned.
+
+        :param database: The database to use.
+        :param collection_name: The name of the collection for which to get the next sequence number.
+        :return: The next sequence number for the given collection.
+    """
+    counters_col = database['countersDb']
+    counter = counters_col.find_one_and_update(
+        {'_id': collection_name},
+        {'$inc': {'seq': 1}},
+        return_document=ReturnDocument.AFTER,
+        upsert=True
+    )
+    return counter['seq']
+
+
+async def add_message(database: Database, uuid: str, shared_key: str, shared_db_name: str, message: str) -> None:
+    """
+    Add a new message to a shared chat collection.
+
+    This function encrypts the given message with the shared key and inserts a new document into the shared chat
+    collection in the database. The document contains the encrypted message, the UUID of the sender, the current
+    timestamp, and a read status flag set to False.
+
+    :param database: The database to use.
+    :param uuid: The UUID of the sender.
+    :param shared_key: The shared key to use for encrypting the message.
+    :param shared_db_name: The name of the shared chat collection.
+    :param message: The message to add.
+    :return: None
+    """
+    # WARNING: Only call this function in protected and verified endpoint
+    # Prepare the data
+    message_encrypted, message_nonce = encrypt_aesgcm(shared_key, message, uuid)
+    date_time = datetime.now(UTC).strftime('%d/%m/%Y %H:%M:%S')
+    message_id = await _get_next_sequence(database, shared_db_name)
+
+    # Insert into shared chat db
+    shared_db_col = database[shared_db_name]
+    result = shared_db_col.insert_one({
+        '_id': message_id,
+        'from': uuid,
+        'message_encrypted': message_encrypted,
+        'message_nonce': message_nonce,
+        'timestamp': date_time,
+        'read_status': False
+    })
+    if not result.acknowledged:
+        raise RuntimeError('Message insert operation was not acknowledged')
+
+
+async def get_messages(database: Database, shared_db_name: str, shared_key: str, own_uuid: str, partner_uuid: str,
+                       num_messages: int | None = None, from_id: int | None = None) -> list[dict[str, str]]:
+    """
+    Retrieve messages from a shared chat collection.
+
+    This function queries the shared chat collection in the database for messages. If a 'from_id' is provided, it
+    retrieves messages with an '_id' less than 'from_id'. If a 'num_messages' is provided, it limits the number of
+    messages retrieved. The messages are sorted in descending order by '_id'. The function decrypts the messages
+    with the shared key and returns a list of dictionaries, each containing the decrypted message, the UUID of the
+    sender, the timestamp, and the read status.
+
+    :param database: The database to use.
+    :param shared_db_name: The name of the shared chat collection.
+    :param shared_key: The shared key to use for decrypting the messages.
+    :param own_uuid: The UUID of the user retrieving the messages.
+    :param partner_uuid: The UUID of the partner.
+    :param num_messages: The maximum number of messages to retrieve.
+    :param from_id: The '_id' from which to start retrieving messages.
+    :return: A list of dictionaries, each containing a decrypted message, the UUID of the sender, the timestamp, and
+             the read status.
+    """
+    # WARNING: Only call this function in protected and verified endpoint
+    # Get messages
+    shared_db_col = database[shared_db_name]
+    if from_id is None and num_messages is None:
+        result = shared_db_col.find()
+    elif from_id is None and num_messages:
+        result = shared_db_col.find().limit(num_messages)
+    else:
+        result = shared_db_col.find({'_id': {'$lt': from_id}}).limit(num_messages)
+
+    # Parse the result
+    messages = []
+    result_list = list(result)
+    for result in result_list:
+        # Prepare some data
+        message_id = result['_id']
+        message_nonce = result['message_nonce']
+        message_encrypted = result['message_encrypted']
+
+        # Determine if the message is from own or partner
+        if own_uuid == result['from']:
+            from_uuid = own_uuid
+            read_status = result['read_status']
+        else:
+            from_uuid = partner_uuid
+            await update_read_status(database, shared_db_name, message_id, True)
+            read_status = True
+
+        # Decrypt the message
+        message = decrypt_aesgcm(shared_key, message_nonce, message_encrypted, from_uuid)
+
+        # Add to the list, parsed
+        messages.append({
+            '_id': message_id,
+            'from_uuid': from_uuid,
+            'message': message,
+            'timestamp': result['timestamp'],
+            'read_status': read_status
+        })
+
+    return messages
+
+
+async def update_read_status(database: Database, shared_db_name: str, message_id: int, read_status: bool) -> None:
+    """
+    Update the read status of a message in a shared chat collection.
+
+    This function updates the 'read_status' field of the document with the given 'message_id' in the shared chat
+    collection in the database. If the update operation is not acknowledged, a RuntimeError is raised.
+
+    :param database: The database to use.
+    :param shared_db_name: The name of the shared chat collection.
+    :param message_id: The id of the message to update.
+    :param read_status: The new read status.
+    :return: None
+    :raises RuntimeError: If the update operation is not acknowledged.
+    """
+    # WARNING: Only call this function in protected and verified endpoint
+    # Get the shared database collection
+    shared_db_col = database[shared_db_name]
+
+    # Update the read status of the message with the given id
+    result = shared_db_col.update_one({'_id': message_id}, {'$set': {'read_status': read_status}})
+
+    if not result.acknowledged:
+        raise RuntimeError('Update operation was not acknowledged')
 
 
 if __name__ == '__main__':
