@@ -1,5 +1,3 @@
-z[//]: # (TODO)
-
 # Re Chat API
 
 ## Description
