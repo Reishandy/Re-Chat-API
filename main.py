@@ -517,7 +517,8 @@ async def chat_websocket(websocket: WebSocket) -> None:
 
     # Send all messages (temporary)
     messages_initial = await db_handler.get_messages(DB, shared_collection, shared_key, uuid, partner_uuid)
-    await websocket.send_text(str(messages_initial))
+    for message in messages_initial:
+        await websocket.send_text(str(message))
 
     # Start receiver and sender thread
     sender_task = create_task(send_message_to_db(websocket, shared_collection, shared_key, uuid))
