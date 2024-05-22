@@ -157,6 +157,10 @@ async def add_contact(database: Database, own_uuid: str, partner_uuid: str, own_
     :raises ValueError: If the user or the contact does not exist.
     """
     # WARNING: Only call this function in protected and verified endpoint
+    if not bool(match(r'^RE_CHAT_[0-9A-F]{8}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{12}$', partner_uuid))\
+            or not bool(match(r'^RE_CHAT_[0-9A-F]{8}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{4}_[0-9A-F]{12}$', own_uuid)):
+        raise ValueError('UUID is not valid')
+
     # Get own private key
     users_col = database['usersDb']
     own_result = users_col.find_one({
